@@ -1,4 +1,3 @@
-
 """Coordinate the complete wind-generation modelling workflow."""
 
 from dataclasses import dataclass
@@ -7,7 +6,7 @@ import geopandas as gpd
 import numpy as np
 
 from wind_curtailment.config import ModelConfig
-from wind_curtailment.data_loader import CFSRDataLoader
+from wind_curtailment.data_loader import ReanalysisDataLoader
 from wind_curtailment.meteorology import WindResource
 from wind_curtailment.turbine import Turbine
 from wind_curtailment.spatial import SpatialModel
@@ -34,11 +33,13 @@ class WindCurtailmentModel:
     """Run the wind-generation model for a specified month."""
 
     def __init__(self, config=None, turbine=None):
-        # Use the default configuration unless the caller supplies one.
+
+        # Use the default configuration unless one is supplied.
         self.config = config if config is not None else ModelConfig()
 
-        # Construct the individual model components.
-        self.data_loader = CFSRDataLoader(self.config)
+        # The loader automatically selects CFSR or CFSv2 based on the year.
+        self.data_loader = ReanalysisDataLoader(self.config)
+
         self.wind_resource = WindResource(self.config)
         self.turbine = turbine if turbine is not None else Turbine()
 
@@ -60,14 +61,13 @@ class WindCurtailmentModel:
                 "Run the spatial-data preparation module first."
             )
 
-        # Read the saved regional polygons, rather than relying on notebook
-        # variables or reconstructing boundaries during every model run.
+        # Read the saved regional polygons.
         regions = gpd.read_file(
             self.config.regions_file,
             layer="model_regions",
         )
 
-        # Check that the saved file contains the expected regions.
+        # Check that the expected four regions are present.
         actual_regions = set(regions["model_region"])
         expected_regions = set(self.config.region_order)
 
@@ -82,7 +82,7 @@ class WindCurtailmentModel:
     def run_month(self, year, month, spatial_method="area"):
         """Run the complete model for one calendar month."""
 
-        # Check that the requested month and year are valid.
+        # Validate the requested year and month.
         if not self.config.starting_year <= year <= self.config.end_year:
             raise ValueError(
                 f"Year must be between {self.config.starting_year} "
@@ -93,7 +93,7 @@ class WindCurtailmentModel:
             raise ValueError("Month must be between 1 and 12.")
 
         # -----------------------------------------------------------
-        # 1. Load the hourly meteorological wind components.
+        # 1. Load the correct reanalysis data for this year.
         # -----------------------------------------------------------
 
         wind_data = self.data_loader.load_month(year, month)
@@ -119,8 +119,7 @@ class WindCurtailmentModel:
             wind_speed_80m
         )
 
-        # The current aggregation implementation requires finite values.
-        # Fail explicitly rather than silently treating missing data as zero.
+        # Fail explicitly if any missing values reach the aggregation stage.
         if not np.all(np.isfinite(capacity_factor)):
             raise ValueError(
                 "Capacity-factor array contains missing or infinite values. "
@@ -128,9 +127,10 @@ class WindCurtailmentModel:
             )
 
         # -----------------------------------------------------------
-        # 4. Load the saved regions and construct the meteorological grid.
+        # 4. Construct the spatial grid using this month's raster geometry.
         # -----------------------------------------------------------
 
+        # This is important because CFSR and CFSv2 have different grids.
         regions = self.load_regions()
 
         grid = self.spatial.build_grid(
@@ -140,7 +140,7 @@ class WindCurtailmentModel:
             crs=wind_data.crs,
         )
 
-        # Intersect every meteorological cell with the regional boundaries.
+        # Intersect the meteorological cells with the regional boundaries.
         intersections = self.spatial.intersect_regions(
             grid,
             regions,
@@ -197,4 +197,3 @@ class WindCurtailmentModel:
             regional_capacity_factors=regional_capacity_factors,
             national_capacity_factor=national_capacity_factor,
         )
-
